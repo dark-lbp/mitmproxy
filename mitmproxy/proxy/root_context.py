@@ -3,7 +3,7 @@ from mitmproxy import exceptions
 from mitmproxy.net import tls
 from mitmproxy.proxy import protocol
 from mitmproxy.proxy import modes
-from mitmproxy.proxy.protocol import http
+from mitmproxy.proxy.protocol import http, RawTCPLayer
 
 
 class RootContext:
@@ -115,7 +115,20 @@ class RootContext:
         if self.config.options.rawtcp and not is_ascii:
             return protocol.RawTCPLayer(top_layer)
 
-        # 7. Assume HTTP1 by default
+        # --------------- add non-HTTP TLS support --------------
+        # 7. Check for http fingerprint
+        http_method_list = [b"GET", b"HEAD", b"POST", b"PUT",
+                            b"DELETE", b"CONNECT", b"OPTIONS", b"TRACE"]
+        http_flag = False
+        for method in http_method_list:
+            if d in method:
+                http_flag = True
+                break
+        if not http_flag:
+            return RawTCPLayer(top_layer)
+        # --------------- add non-HTTP TLS support --------------
+
+        # 8. Assume HTTP1 by default
         return protocol.Http1Layer(top_layer, http.HTTPMode.transparent)
 
     def log(self, msg, level, subs=()):

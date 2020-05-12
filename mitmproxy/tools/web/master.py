@@ -30,7 +30,8 @@ class WebMaster(master.Master):
 
         self.options.changed.connect(self._sig_options_update)
         self.options.changed.connect(self._sig_settings_update)
-
+        self.iol = None
+        self.http_server = None
         self.addons.add(*addons.default_addons())
         self.addons.add(
             webaddons.WebAddon(),
@@ -103,11 +104,16 @@ class WebMaster(master.Master):
 
     def run(self):  # pragma: no cover
         AsyncIOMainLoop().install()
-        iol = tornado.ioloop.IOLoop.instance()
-        http_server = tornado.httpserver.HTTPServer(self.app)
-        http_server.listen(self.options.web_port, self.options.web_iface)
+        self.iol = tornado.ioloop.IOLoop.instance()
+        self.http_server = tornado.httpserver.HTTPServer(self.app)
+        self.http_server.listen(self.options.web_port, self.options.web_iface)
         web_url = "http://{}:{}/".format(self.options.web_iface, self.options.web_port)
         self.log.info(
             "Web server listening at {}".format(web_url),
         )
-        self.run_loop(iol.start)
+        self.run_loop(self.iol.start)
+
+    # Fully shutdown tornado
+    def shutdown(self):
+        self.http_server.stop()
+        super(WebMaster, self).shutdown()

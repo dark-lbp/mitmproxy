@@ -22,14 +22,14 @@ mimtproxy console you can also view a palette of all commands in the command
 browser (by default accessible with the `C` key binding).
 
 
-# Working with flows
+# Working with Flows
 
 Many of mitmproxy's commands take flows as arguments. For instance, the
 signature for the client replay commands looks like this:
 
-{{< highlight none  >}}
+```
 replay.client [flow]
-{{< /highlight >}}
+```
 
 
 That means that it expects a sequence of one or more flows. This is where [flow
@@ -40,33 +40,38 @@ invoking commands.
 Fire up mitmproxy console, and intercept some traffic so we have flows to work
 with. Now type the following command:
 
-{{< highlight none  >}}
+```
 :replay.client @focus
-{{< /highlight >}}
+```
 
 Make sure you try using tab completion for the command name and the flow
 specification. The `@focus` specifiers expands to the currently focused flow, so
 you should see this flow replay. However, replay can take any number of flows.
 Try the following command:
 
-{{< highlight none  >}}
+```
 :replay.client @all
-{{< /highlight >}}
+```
 
 Now you should see all flows replay one by one. We have the full power of the
 mitmproxy filter language at our disposal here, so we could also, for example,
 just replay flows for a specific domain:
 
-{{< highlight none  >}}
+```
 :replay.client "~d google.com"
-{{< /highlight >}}
+```
 
+# Custom Key Bindings
 
+Mitmproxy's key bindings can be customized to your needs in the
+`~/.mitmproxy/keys.yaml` file. This file consists of a sequence of maps, with
+the following keys:
 
+* `key` (**mandatory**): The key to bind.
+* `cmd` (**mandatory**): The command to execute when the key is pressed.
+* `context`: A list of contexts in which the key should be bound. By default this is **global** (i.e. the key is bound everywhere). Valid contexts are `chooser`, `commands`, `dataviewer`, `eventlog`, `flowlist`, `flowview`, `global`, `grideditor`, `help`, `keybindings`, `options`.
+* `help`: A help string for the binding which will be shown in the key binding browser.
 
+#### Example
 
-
-
-
-
-
+{{< example src="examples/keys.yaml" lang="yaml" >}}

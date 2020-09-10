@@ -9,6 +9,7 @@ from mitmproxy import exceptions
 from mitmproxy import flow
 from mitmproxy import http
 from mitmproxy import log
+from mitmproxy import tcp
 from mitmproxy.tools.console import keymap
 from mitmproxy.tools.console import overlay
 from mitmproxy.tools.console import signals
@@ -112,19 +113,22 @@ class ConsoleAddon:
             choices=sorted(console_palettes),
         )
         loader.add_option(
-            "console_palette_transparent", bool, False,
+            "console_palette_transparent", bool, True,
             "Set transparent background for palette."
         )
         loader.add_option(
             "console_mouse", bool, True,
             "Console mouse interaction."
         )
-
         loader.add_option(
             "console_flowlist_layout",
             str, "default",
             "Set the flowlist layout",
             choices=sorted(console_flowlist_layout)
+        )
+        loader.add_option(
+            "console_strip_trailing_newlines", bool, False,
+            "Strip trailing newlines from edited request/response bodies."
         )
 
     @command.command("console.layout.options")
@@ -291,6 +295,8 @@ class ConsoleAddon:
         Prompt the user to edit a command with a (possibly empty) starting value.
         """
         quoted = " ".join(command_lexer.quote(x) for x in command_str)
+        if quoted:
+            quoted += " "
         signals.status_prompt_command.send(partial=quoted)
 
     @command.command("console.command.set")
@@ -334,9 +340,10 @@ class ConsoleAddon:
     @command.command("console.view.flow")
     def view_flow(self, flow: flow.Flow) -> None:
         """View a flow."""
-        if hasattr(flow, "request"):
-            # FIME: Also set focus?
+        if isinstance(flow, (http.HTTPFlow, tcp.TCPFlow)):
             self.master.switch_view("flowview")
+        else:
+            ctx.log.warn(f"No detail view for {type(flow).__name__}.")
 
     @command.command("console.exit")
     def exit(self) -> None:
@@ -381,22 +388,30 @@ class ConsoleAddon:
         """
             Possible components for console.edit.focus.
         """
-        return [
-            "cookies",
-            "urlencoded form",
-            "multipart form",
-            "path",
-            "method",
-            "query",
-            "reason",
-            "request-headers",
-            "response-headers",
-            "request-body",
-            "response-body",
-            "status_code",
-            "set-cookies",
-            "url",
-        ]
+        flow = self.master.view.focus.flow
+        focus_options = []
+
+        if type(flow) == tcp.TCPFlow:
+            focus_options = ["tcp-message"]
+        elif type(flow) == http.HTTPFlow:
+            focus_options = [
+                "cookies",
+                "urlencoded form",
+                "multipart form",
+                "path",
+                "method",
+                "query",
+                "reason",
+                "request-headers",
+                "response-headers",
+                "request-body",
+                "response-body",
+                "status_code",
+                "set-cookies",
+                "url",
+            ]
+
+        return focus_options
 
     @command.command("console.edit.focus")
     @command.argument("flow_part", type=mitmproxy.types.Choice("console.edit.focus.options"))
@@ -437,13 +452,14 @@ class ConsoleAddon:
             else:
                 message = flow.response
             c = self.master.spawn_editor(message.get_content(strict=False) or b"")
-            # Fix an issue caused by some editors when editing a
-            # request/response body. Many editors make it hard to save a
-            # file without a terminating newline on the last line. When
-            # editing message bodies, this can cause problems. For now, I
-            # just strip the newlines off the end of the body when we return
-            # from an editor.
-            message.content = c.rstrip(b"\n")
+            # Many editors make it hard to save a file without a terminating
+            # newline on the last line. When editing message bodies, this can
+            # cause problems. We strip trailing newlines by default, but this
+            # behavior is configurable.
+            if self.master.options.console_strip_trailing_newlines:
+                message.content = c.rstrip(b"\n")
+            else:
+                message.content = c
         elif flow_part == "set-cookies":
             self.master.switch_view("edit_focus_setcookies")
         elif flow_part == "url":
@@ -456,6 +472,10 @@ class ConsoleAddon:
                 "console.command",
                 ["flow.set", "@focus", flow_part]
             )
+        elif flow_part == "tcp-message":
+            message = flow.messages[-1]
+            c = self.master.spawn_editor(message.content or b"")
+            message.content = c.rstrip(b"\n")
 
     def _grideditor(self):
         gewidget = self.master.window.current("grideditor")

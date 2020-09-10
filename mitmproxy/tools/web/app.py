@@ -33,6 +33,7 @@ def flow_to_json(flow: mitmproxy.flow.Flow) -> dict:
     f = {
         "id": flow.id,
         "intercepted": flow.intercepted,
+        "is_replay": flow.is_replay,
         "client_conn": flow.client_conn.get_state(),
         "server_conn": flow.server_conn.get_state(),
         "type": flow.type,
@@ -72,7 +73,7 @@ def flow_to_json(flow: mitmproxy.flow.Flow) -> dict:
                 "contentHash": content_hash,
                 "timestamp_start": flow.request.timestamp_start,
                 "timestamp_end": flow.request.timestamp_end,
-                "is_replay": flow.request.is_replay,
+                "is_replay": flow.is_replay == "request",  # TODO: remove, use flow.is_replay instead.
                 "pretty_host": flow.request.pretty_host,
             }
         if flow.response:
@@ -91,8 +92,11 @@ def flow_to_json(flow: mitmproxy.flow.Flow) -> dict:
                 "contentHash": content_hash,
                 "timestamp_start": flow.response.timestamp_start,
                 "timestamp_end": flow.response.timestamp_end,
-                "is_replay": flow.response.is_replay,
+                "is_replay": flow.is_replay == "response",  # TODO: remove, use flow.is_replay instead.
             }
+            if flow.response.data.trailers:
+                f["response"]["trailers"] = tuple(flow.response.data.trailers.items(True))
+
     f.get("server_conn", {}).pop("cert", None)
     f.get("client_conn", {}).pop("mitmcert", None)
 
@@ -301,6 +305,10 @@ class FlowHandler(RequestHandler):
                             request.headers.clear()
                             for header in v:
                                 request.headers.add(*header)
+                        elif k == "trailers":
+                            request.trailers.clear()
+                            for trailer in v:
+                                request.trailers.add(*trailer)
                         elif k == "content":
                             request.text = v
                         else:
@@ -317,6 +325,10 @@ class FlowHandler(RequestHandler):
                             response.headers.clear()
                             for header in v:
                                 response.headers.add(*header)
+                        elif k == "trailers":
+                            response.trailers.clear()
+                            for trailer in v:
+                                response.trailers.add(*trailer)
                         elif k == "content":
                             response.text = v
                         else:
@@ -437,13 +449,13 @@ class Settings(RequestHandler):
 
     def put(self):
         update = self.json
-        option_whitelist = {
+        allowed_options = {
             "intercept", "showhost", "upstream_cert", "ssl_insecure",
             "rawtcp", "http2", "websocket", "anticache", "anticomp",
             "stickycookie", "stickyauth", "stream_large_bodies"
         }
         for k in update:
-            if k not in option_whitelist:
+            if k not in allowed_options:
                 raise APIError(400, "Unknown setting {}".format(k))
         self.master.options.update(**update)
 
@@ -496,7 +508,7 @@ class Application(tornado.web.Application):
         self.add_handlers("dns-rebind-protection", [(r"/.*", DnsRebind)])
         self.add_handlers(
             # make mitmweb accessible by IP only to prevent DNS rebinding.
-            r'^(localhost|[0-9.:\[\]]+)$',
+            r'^(localhost|[0-9.]+|\[[0-9a-fA-F:]+\])$',
             [
                 (r"/", IndexHandler),
                 (r"/filter-help(?:\.json)?", FilterHelp),

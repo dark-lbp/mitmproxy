@@ -17,6 +17,7 @@ from mitmproxy import options
 from mitmproxy.coretypes import basethread
 from mitmproxy.net import server_spec, tls
 from mitmproxy.net.http import http1
+from mitmproxy.net.http.url import hostport
 from mitmproxy.utils import human
 
 
@@ -46,7 +47,7 @@ class RequestReplayThread(basethread.BaseThread):
         f.live = True
         r = f.request
         bsl = human.parse_size(self.options.body_size_limit)
-        first_line_format_backup = r.first_line_format
+        authority_backup = r.authority
         server = None
         try:
             f.response = None
@@ -79,9 +80,9 @@ class RequestReplayThread(basethread.BaseThread):
                             sni=f.server_conn.sni,
                             **tls.client_arguments_from_options(self.options)
                         )
-                        r.first_line_format = "relative"
+                        r.authority = b""
                     else:
-                        r.first_line_format = "absolute"
+                        r.authority = hostport(r.scheme, r.host, r.port)
                 else:
                     server_address = (r.host, r.port)
                     server = connections.ServerConnection(server_address)
@@ -91,7 +92,7 @@ class RequestReplayThread(basethread.BaseThread):
                             sni=f.server_conn.sni,
                             **tls.client_arguments_from_options(self.options)
                         )
-                    r.first_line_format = "relative"
+                    r.authority = ""
 
                 server.wfile.write(http1.assemble_request(r))
                 server.wfile.flush()
@@ -101,9 +102,7 @@ class RequestReplayThread(basethread.BaseThread):
                     f.server_conn.close()
                 f.server_conn = server
 
-                f.response = http.HTTPResponse.wrap(
-                    http1.read_response(server.rfile, r, body_size_limit=bsl)
-                )
+                f.response = http1.read_response(server.rfile, r, body_size_limit=bsl)
             response_reply = self.channel.ask("response", f)
             if response_reply == exceptions.Kill:
                 raise exceptions.Kill()
@@ -111,11 +110,11 @@ class RequestReplayThread(basethread.BaseThread):
             f.error = flow.Error(str(e))
             self.channel.ask("error", f)
         except exceptions.Kill:
-            self.channel.tell("log", log.LogEntry("Connection killed", "info"))
+            self.channel.tell("log", log.LogEntry(flow.Error.KILLED_MESSAGE, "info"))
         except Exception as e:
             self.channel.tell("log", log.LogEntry(repr(e), "error"))
         finally:
-            r.first_line_format = first_line_format_backup
+            r.authority = authority_backup
             f.live = False
             if server and server.connected():
                 server.finish()
@@ -127,15 +126,18 @@ class ClientPlayback:
         self.q = queue.Queue()
         self.thread: RequestReplayThread = None
 
-    def check(self, f: http.HTTPFlow):
+    def check(self, f: flow.Flow):
         if f.live:
             return "Can't replay live flow."
         if f.intercepted:
             return "Can't replay intercepted flow."
-        if not f.request:
-            return "Can't replay flow with missing request."
-        if f.request.raw_content is None:
-            return "Can't replay flow with missing content."
+        if isinstance(f, http.HTTPFlow):
+            if not f.request:
+                return "Can't replay flow with missing request."
+            if f.request.raw_content is None:
+                return "Can't replay flow with missing content."
+        else:
+            return "Can only replay HTTP flows."
 
     def load(self, loader):
         loader.add_option(
@@ -177,7 +179,7 @@ class ClientPlayback:
             self.q.queue.clear()
             for f in lst:
                 f.revert()
-            ctx.master.addons.trigger("update", lst)
+        ctx.master.addons.trigger("update", lst)
         ctx.log.alert("Client replay queue cleared.")
 
     @command.command("replay.client")
@@ -197,7 +199,7 @@ class ClientPlayback:
             lst.append(hf)
             # Prepare the flow for replay
             hf.backup()
-            hf.request.is_replay = True
+            hf.is_replay = "request"
             hf.response = None
             hf.error = None
             # https://github.com/mitmproxy/mitmproxy/issues/2197

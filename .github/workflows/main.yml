@@ -2,14 +2,6 @@ name: CI
 
 on: [push, pull_request]
 
-# We currently use Python 3.7 for most things:
-# - zstandard currently doesn't have 3.8 wheels,
-# - we need to upgrade cryptography from version 2.4, which also doesn't have wheels
-
-env:
-  # Codecov
-  CODECOV_TOKEN: "0409bdfd-57a4-477d-a8af-f6172ef431d3"
-
 jobs:
   lint-pr:
     if: github.event_name == 'pull_request'
@@ -18,49 +10,63 @@ jobs:
       - uses: actions/checkout@v1
       - uses: TrueBrain/actions-flake8@v1.2
   lint-local:
-    # do not use external action when secrets are exposed.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
       - uses: actions/setup-python@v1
-      - run: pip install flake8
-      - run: flake8 mitmproxy pathod examples test release
+      - run: pip install tox
+      - run: tox -e flake8
+  filename-matching:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions/setup-python@v1
+      - run: pip install tox
+      - run: tox -e filename_matching
   mypy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
       - uses: actions/setup-python@v1
-      - run: pip install mypy
-      - run: mypy .
+      - run: pip install tox
+      - run: tox -e mypy
+  individual-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions/setup-python@v1
+      - run: pip install tox
+      - run: tox -e individual_coverage
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            py: 3.8
+          - os: macos-latest
+            py: 3.8
+          - os: ubuntu-latest
+            py: 3.8
+          - os: ubuntu-latest
+            py: 3.7
+          - os: ubuntu-latest
+            py: 3.6
     runs-on: ${{ matrix.os }}
     steps:
       - run: printenv
       - uses: actions/checkout@v1
       - uses: actions/setup-python@v1
         with:
-          python-version: '3.7'
+          python-version: ${{ matrix.py }}
       - run: pip install tox
-      - run: tox -e py37
-      # codecov's GitHub action only supports Linux. https://github.com/codecov/codecov-action/issues/7
-      # codecov's Python uploader has no github actions support yet. https://github.com/codecov/codecov-python/pull/214
-      - name: Extract branch name  # https://stackoverflow.com/a/58035262/934719
-        shell: bash
-        run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
-        id: extract_branch
-      - run: pip install codecov
-      - run: >
-          codecov -f coverage.xml
-          --name python-${{ matrix.os }}
-          --commit ${{ github.sha }}
-          --slug ${{ github.repository }}
-          --branch ${{ steps.extract_branch.outputs.branch }}
-  test-py35:
+      - run: tox -e py
+      - uses: codecov/codecov-action@v1
+        with:
+          file: ./coverage.xml
+          name: ${{ matrix.os }}
+  test-unsupported-python-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
@@ -77,10 +83,10 @@ jobs:
       - uses: actions/checkout@v1
       - uses: actions/setup-python@v1
         with:
-          python-version: '3.7'
+          python-version: '3.8'
       - run: pip install tox
       - run: tox -e cibuild -- build
-      - uses: actions/upload-artifact@master
+      - uses: actions/upload-artifact@v2
         with:
           name: wheel
           path: release/dist
@@ -89,7 +95,7 @@ jobs:
       fail-fast: false
       matrix:
         # Old Ubuntu version for old glibc
-        os: [macos-latest, windows-latest, ubuntu-16.04]
+        os: [macos-10.15, windows-2019, ubuntu-16.04]
     runs-on: ${{ matrix.os }}
     env:
       CI_BUILD_PYINSTALLER: 1
@@ -108,7 +114,7 @@ jobs:
       - run: pip install tox
       - run: tox -e cibuild -- build
       # artifacts must have different names, see https://github.com/actions/upload-artifact/issues/24
-      - uses: actions/upload-artifact@master
+      - uses: actions/upload-artifact@v2
         with:
           name: binaries.${{ matrix.os }}
           path: release/dist
@@ -131,7 +137,10 @@ jobs:
         run: yarn
       - working-directory: ./web
         run: npm test
-      - run: bash <(curl -s https://codecov.io/bash)
+      - uses: codecov/codecov-action@v1
+        with:
+          file: ./web/coverage/coverage-final.json
+          name: web
 
   docs:
     env:
@@ -142,10 +151,10 @@ jobs:
       - uses: actions/checkout@v1
       - uses: actions/setup-python@v1
         with:
-          python-version: '3.7'
+          python-version: '3.8'
       - run: pip install tox
       - run: |
-          wget https://github.com/gohugoio/hugo/releases/download/v0.65.3/hugo_extended_0.65.3_Linux-64bit.deb
+          wget https://github.com/gohugoio/hugo/releases/download/v0.70.0/hugo_extended_0.70.0_Linux-64bit.deb
           sudo dpkg -i hugo*.deb
       - run: tox -e docs
 
@@ -164,7 +173,7 @@ jobs:
         with:
           python-version: '3.7'
       - run: pip install tox
-      - uses: actions/download-artifact@master
+      - uses: actions/download-artifact@v2
         with:
           name: wheel
           path: release/dist
@@ -187,24 +196,14 @@ jobs:
       - uses: actions/checkout@v1
       - uses: actions/setup-python@v1
         with:
-          python-version: '3.7'
-      # artifacts must be downloaded individually, see https://github.com/actions/download-artifact/issues/6
-      - uses: actions/download-artifact@master
+          python-version: '3.8'
+      - uses: actions/download-artifact@v2
         with:
-          name: wheel
           path: release/dist
-      - uses: actions/download-artifact@master
-        with:
-          name: binaries.windows-latest
-          path: release/dist
-      - uses: actions/download-artifact@master
-        with:
-          name: binaries.macos-latest
-          path: release/dist
-      - uses: actions/download-artifact@master
-        with:
-          name: binaries.ubuntu-16.04
-          path: release/dist
+      # move artifacts from their subfolders into release/dist
+      - run: find release/dist -mindepth 2 -type f -exec mv {} release/dist \;
+      # and then delete the empty folders
+      - run: find release/dist -type d -empty -delete
       - run: ls release/dist
       - run: pip install tox
       - run: tox -e cibuild -- upload

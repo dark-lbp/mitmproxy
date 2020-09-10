@@ -15,8 +15,8 @@ import OpenSSL
 from mitmproxy.coretypes import serializable
 
 # Default expiry must not be too long: https://github.com/mitmproxy/mitmproxy/issues/815
-DEFAULT_EXP = 94608000  # = 24 * 60 * 60 * 365 * 3
-DEFAULT_EXP_DUMMY_CERT = 63072000  # = 2 years
+DEFAULT_EXP = 94608000  # = 60 * 60 * 24 * 365 * 3 = 3 years
+DEFAULT_EXP_DUMMY_CERT = 31536000  # = 60 * 60 * 24 * 365 = 1 year
 
 # Generated with "openssl dhparam". It's too slow to generate this on startup.
 DEFAULT_DHPARAM = b"""
@@ -106,7 +106,10 @@ def dummy_cert(privkey, cacert, commonname, sans, organization):
     cert.gmtime_adj_notBefore(-3600 * 48)
     cert.gmtime_adj_notAfter(DEFAULT_EXP_DUMMY_CERT)
     cert.set_issuer(cacert.get_subject())
-    if commonname is not None and len(commonname) < 64:
+    is_valid_commonname = (
+        commonname is not None and len(commonname) < 64
+    )
+    if is_valid_commonname:
         cert.get_subject().CN = commonname
     if organization is not None:
         cert.get_subject().O = organization
@@ -114,7 +117,13 @@ def dummy_cert(privkey, cacert, commonname, sans, organization):
     if ss:
         cert.set_version(2)
         cert.add_extensions(
-            [OpenSSL.crypto.X509Extension(b"subjectAltName", False, ss)])
+            [OpenSSL.crypto.X509Extension(
+                b"subjectAltName",
+                # RFC 5280 §4.2.1.6: subjectAltName is critical if subject is empty.
+                not is_valid_commonname,
+                ss
+            )]
+        )
     cert.add_extensions([
         OpenSSL.crypto.X509Extension(
             b"extendedKeyUsage",
@@ -164,9 +173,7 @@ class CertStore:
         self.expire_queue.append(entry)
         if len(self.expire_queue) > self.STORE_CAP:
             d = self.expire_queue.pop(0)
-            for k, v in list(self.certs.items()):
-                if v == d:
-                    del self.certs[k]
+            self.certs = {k: v for k, v in self.certs.items() if v != d}
 
     @staticmethod
     def load_dhparam(path):
@@ -189,7 +196,7 @@ class CertStore:
             return dh
 
     @classmethod
-    def from_store(cls, path, basename, key_size):
+    def from_store(cls, path, basename, key_size, passphrase: typing.Optional[bytes] = None):
         ca_path = os.path.join(path, basename + "-ca.pem")
         if not os.path.exists(ca_path):
             key, ca = cls.create_store(path, basename, key_size)
@@ -201,7 +208,8 @@ class CertStore:
                 raw)
             key = OpenSSL.crypto.load_privatekey(
                 OpenSSL.crypto.FILETYPE_PEM,
-                raw)
+                raw,
+                passphrase)
         dh_path = os.path.join(path, basename + "-dhparam.pem")
         dh = cls.load_dhparam(dh_path)
         return cls(key, ca, ca_path, dh)
@@ -273,7 +281,7 @@ class CertStore:
 
         return key, ca
 
-    def add_cert_file(self, spec: str, path: str) -> None:
+    def add_cert_file(self, spec: str, path: str, passphrase: typing.Optional[bytes] = None) -> None:
         with open(path, "rb") as f:
             raw = f.read()
         cert = Cert(
@@ -283,7 +291,8 @@ class CertStore:
         try:
             privatekey = OpenSSL.crypto.load_privatekey(
                 OpenSSL.crypto.FILETYPE_PEM,
-                raw)
+                raw,
+                passphrase)
         except Exception:
             privatekey = self.default_privatekey
         self.add_cert(

@@ -1,6 +1,5 @@
-from mitmproxy import http
-from mitmproxy.proxy.protocol import http as httpbase
 from mitmproxy.net.http import http1
+from mitmproxy.proxy.protocol import http as httpbase
 from mitmproxy.utils import human
 
 
@@ -11,9 +10,7 @@ class Http1Layer(httpbase._HttpTransmissionLayer):
         self.mode = mode
 
     def read_request_headers(self, flow):
-        return http.HTTPRequest.wrap(
-            http1.read_request_head(self.client_conn.rfile)
-        )
+        return http1.read_request_head(self.client_conn.rfile)
 
     def read_request_body(self, request):
         expected_size = http1.expected_http_body_size(request)
@@ -22,6 +19,12 @@ class Http1Layer(httpbase._HttpTransmissionLayer):
             expected_size,
             human.parse_size(self.config.options.body_size_limit)
         )
+
+    def read_request_trailers(self, request):
+        if "Trailer" in request.headers:
+            # TODO: not implemented yet
+            self.log("HTTP/1 request trailer headers are not implemented yet!", "warn")
+        return None
 
     def send_request_headers(self, request):
         headers = http1.assemble_request_head(request)
@@ -33,13 +36,18 @@ class Http1Layer(httpbase._HttpTransmissionLayer):
             self.server_conn.wfile.write(chunk)
             self.server_conn.wfile.flush()
 
+    def send_request_trailers(self, request):
+        if "Trailer" in request.headers:
+            # TODO: not implemented yet
+            self.log("HTTP/1 request trailer headers are not implemented yet!", "warn")
+
     def send_request(self, request):
+        # TODO: this does not yet support request trailers
         self.server_conn.wfile.write(http1.assemble_request(request))
         self.server_conn.wfile.flush()
 
     def read_response_headers(self):
-        resp = http1.read_response_head(self.server_conn.rfile)
-        return http.HTTPResponse.wrap(resp)
+        return http1.read_response_head(self.server_conn.rfile)
 
     def read_response_body(self, request, response):
         expected_size = http1.expected_http_body_size(request, response)
@@ -48,6 +56,12 @@ class Http1Layer(httpbase._HttpTransmissionLayer):
             expected_size,
             human.parse_size(self.config.options.body_size_limit)
         )
+
+    def read_response_trailers(self, request, response):
+        if "Trailer" in response.headers:
+            # TODO: not implemented yet
+            self.log("HTTP/1 trailer headers are not implemented yet!", "warn")
+        return None
 
     def send_response_headers(self, response):
         raw = http1.assemble_response_head(response)
@@ -58,6 +72,12 @@ class Http1Layer(httpbase._HttpTransmissionLayer):
         for chunk in http1.assemble_body(response.headers, chunks):
             self.client_conn.wfile.write(chunk)
             self.client_conn.wfile.flush()
+
+    def send_response_trailers(self, response):
+        if "Trailer" in response.headers:
+            # TODO: not implemented yet
+            self.log("HTTP/1 trailer headers are not implemented yet!", "warn")
+        return
 
     def check_close_connection(self, flow):
         request_close = http1.connection_close(

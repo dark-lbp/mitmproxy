@@ -17,6 +17,7 @@ class T(TBase):
 
 def test_check_option_type():
     typecheck.check_option_type("foo", 42, int)
+    typecheck.check_option_type("foo", 42, float)
     with pytest.raises(TypeError):
         typecheck.check_option_type("foo", 42, str)
     with pytest.raises(TypeError):
@@ -72,6 +73,7 @@ def test_typesec_to_str():
     assert(typecheck.typespec_to_str(str)) == "str"
     assert(typecheck.typespec_to_str(typing.Sequence[str])) == "sequence of str"
     assert(typecheck.typespec_to_str(typing.Optional[str])) == "optional str"
+    assert(typecheck.typespec_to_str(typing.Optional[int])) == "optional int"
     with pytest.raises(NotImplementedError):
         typecheck.typespec_to_str(dict)
 

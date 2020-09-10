@@ -107,9 +107,14 @@ class ServerConnectionMixin:
         """
         address = self.server_conn.address
         if address:
+            forbidden_hosts = ["localhost", "127.0.0.1", "::1"]
+
+            if self.config.options.listen_host:
+                forbidden_hosts.append(self.config.options.listen_host)
+
             self_connect = (
                 address[1] == self.config.options.listen_port and
-                address[0] in ("localhost", "127.0.0.1", "::1")
+                address[0] in forbidden_hosts
             )
             if self_connect:
                 raise exceptions.ProtocolException(
@@ -160,10 +165,10 @@ class ServerConnectionMixin:
         """
         if not self.server_conn.address:
             raise exceptions.ProtocolException("Cannot connect to server, no server address given.")
-        self.log("serverconnect", "debug", [repr(self.server_conn.address)])
-        self.channel.ask("serverconnect", self.server_conn)
         try:
             self.server_conn.connect()
+            self.log("serverconnect", "debug", [repr(self.server_conn.address)])
+            self.channel.ask("serverconnect", self.server_conn)
         except exceptions.TcpException as e:
             raise exceptions.ProtocolException(
                 "Server connection to {} failed: {}".format(

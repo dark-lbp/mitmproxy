@@ -48,6 +48,10 @@ class Options(optmanager.OptManager):
             """
         )
         self.add_option(
+            "cert_passphrase", Optional[str], None,
+            "Passphrase for decrypting the private key provided in the --cert option."
+        )
+        self.add_option(
             "ciphers_client", Optional[str], None,
             "Set supported ciphers for client connections using OpenSSL syntax."
         )
@@ -164,8 +168,8 @@ class Options(optmanager.OptManager):
             "tcp_hosts", Sequence[str], [],
             """
             Generic TCP SSL proxy mode for all hosts that match the pattern.
-            Similar to --ignore, but SSL connections are intercepted. The
-            communication contents are printed to the log in verbose mode.
+            Similar to --ignore-hosts, but SSL connections are intercepted.
+            The communication contents are printed to the log in verbose mode.
             """
         )
         self.add_option(
@@ -179,6 +183,12 @@ class Options(optmanager.OptManager):
             "key_size", int, KEY_SIZE,
             """
             TLS key size for certificates and CA.
+            """
+        )
+        self.add_option(
+            "relax_http_form_validation", bool, False,
+            """
+            Disable HTTP form validation.
             """
         )
 

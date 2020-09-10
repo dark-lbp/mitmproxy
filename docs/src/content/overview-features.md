@@ -1,20 +1,21 @@
 ---
 title: "Features"
-menu: "overview"
 menu:
-    overview:
+    concepts:
         weight: 4
 ---
 
-# Mitmproxy Core Features
+# Features
 
 
 - [Anticache](#anticache)
 - [Client-side replay](#client-side-replay)
+- [Map Local](#map-local)
+- [Map Remote](#map-remote)
+- [Modify Body](#modify-body)
+- [Modify Headers](#modify-headers)
 - [Proxy Authentication](#proxy-authentication)
-- [Replacements](#replacements)
 - [Server-side replay](#server-side-replay)
-- [Set Headers](#set-headers)
 - [Sticky Auth](#sticky-auth)
 - [Sticky Cookies](#sticky-cookies)
 - [Streaming](#streaming)
@@ -41,34 +42,149 @@ conversation, where requests may have been made concurrently.
 You may want to use client-side replay in conjunction with the `anticache`
 option, to make sure the server responds with complete data.
 
-## Proxy Authentication
 
-Asks the user for authentication before they are permitted to use the proxy.
-Authentication headers are stripped from the flows, so they are not passed to
-upstream servers. For now, only HTTP Basic authentication is supported. The
-proxy auth options are not compatible with the transparent, socks or reverse
-proxy mode.
+## Map Local
+
+The `map_local` option lets you specify an arbitrary number of patterns that
+define redirections of HTTP requests to local files or directories.
+The local file is fetched instead of the original resource
+and transparently returned to the client.
+
+`map_local` patterns look like this:
+
+```
+|url-regex|local-path
+|flow-filter|url-regex|local-path
+```
+
+* **local-path** is the file or directory that should be served to the client.
+
+* **url-regex** is a regular expression applied on the request URL. It must match for a redirect to take place.
+
+* **flow-filter** is an optional mitmproxy [filter expression]({{< relref "concepts-filters">}})
+that additionally constrains which requests will be redirected.
+
+### Examples
+
+Pattern | Description
+------- | -----------
+`|example.com/main.js|~/main-local.js` | Replace `example.com/main.js` with `~/main-local.js`.
+`|example.com/static|~/static` | Replace `example.com/static/foo/bar.css` with `~/static/foo/bar.css`.
+`|example.com/static/foo|~/static` | Replace `example.com/static/foo/bar.css` with `~/static/bar.css`.
+`|~m GET|example.com/static|~/static` | Replace `example.com/static/foo/bar.css` with `~/static/foo/bar.css` (but only for GET requests).
+
+### Details
+
+If *local-path* is a file, this file will always be served. File changes will be reflected immediately, there is no caching.
+
+If *local-path* is a directory, *url-regex* is used to split the request URL in two parts and part on the right is appended to *local-path*, excluding the query string.
+However, if *url-regex* contains a regex capturing group, this behavior changes and the first capturing group is appended instead (and query strings are not stripped).
+Special characters are mapped to `_`. If the file cannot be found, `/index.html` is appended and we try again. Directory traversal outside of the originally specified directory is not possible.
+
+To illustrate this, consider the following example which maps all requests for `example.org/css*` to the local directory `~/static-css`.
+
+<pre>
+                  ┌── url regex ──┬─ local path ─┐
+map_local option: |<span style="color:#f92672">example.com/css</span>|<span style="color:#82b719">~/static-css</span>
+                   <!--                     -->         │
+                   <!--                     -->         │    URL is split here
+                   <!--                     -->         ▼            ▼
+HTTP Request URL: https://<span style="color:#f92672">example.com/css</span><span style="color:#66d9ef">/print/main.css</span><span style="color:#bbb">?timestamp=123</span>
+                          <!--                     -->               <!--                            -->      │        <!--                         -->        ▼
+                          <!--                     -->               <!--                            -->      ▼        <!--                         -->      query string is ignored
+Served File:      Preferred: <span style="color:#82b719">~/static-css</span><span style="color:#66d9ef">/print/main.css</span>
+                   Fallback: <span style="color:#82b719">~/static-css</span><span style="color:#66d9ef">/print/main.css</span>/index.html
+                  Otherwise: 404 response without content
+</pre>
+
+If the file depends on the query string, we can use regex capturing groups. In this example, all `GET` requests for
+`example.org/index.php?page=<page-name>` are mapped to `~/static-dir/<page-name>`:
+
+<pre>
+                    flow
+                  ┌filter┬─────────── url regex ───────────┬─ local path ─┐
+map_local option: |~m GET|<span style="color:#f92672">example.com/index.php\\?page=</span><span style="color:#66d9ef">(.+)</span>|<span style="color:#82b719">~/static-dir</span>
+                          <!--                     -->  │                          <!--                            --> │
+                          <!--                     -->  │                          <!--                            --> │ regex group = suffix
+                          <!--                     -->  ▼                          <!--                            --> ▼
+HTTP Request URL: https://<span style="color:#f92672">example.com/index.php?page=</span><span style="color:#66d9ef">aboutus</span></span>
+                          <!--                     -->                           <!--                            -->   │
+                          <!--                     -->                           <!--                            -->   ▼
+Served File:                 Preferred: <span style="color:#82b719">~/static-dir</span>/<span style="color:#66d9ef">aboutus</span>
+                              Fallback: <span style="color:#82b719">~/static-dir</span>/<span style="color:#66d9ef">aboutus</span>/index.html
+                             Otherwise: 404 response without content
+</pre>
 
 
-## Replacements
 
-The `replacements` option lets you specify an arbitrary number of patterns that
-define text replacements within flows. A replacement pattern looks like this:
 
-{{< highlight none  >}}
-/patt/regex/replacement
-{{< / highlight >}}
+## Map Remote
 
-Here, **patt** is a mitmproxy filter expression that defines which flows a
-replacement applies to, **regex** is a valid Python regular expression that
-defines what gets replaced, and **replacement** is a string literal that is
-substituted in. The separator is arbitrary, and defined by the first character.
-If the replacement string literal starts with `@`, it is treated as a file path
-from which the replacement is read.
+The `map_remote` option lets you specify an arbitrary number of patterns that
+define replacements within HTTP request URLs before they are sent to a server.
+The substituted URL is fetched instead of the original resource
+and the corresponding HTTP response is returned transparently to the client.
+Note that if the original destination uses HTTP2, the substituted destination
+needs to support HTTP2 as well, otherwise the substituted request may fail.
+As a workaround you can start mitmproxy with the `--no-http2` flag to disable HTTP2.
+`map_remote` patterns look like this:
 
-Replace hooks fire when either a client request or a server response is
+```
+|flow-filter|url-regex|replacement
+|url-regex|replacement
+```
+
+* **flow-filter** is an optional mitmproxy [filter expression]({{< relref "concepts-filters">}})
+that defines which requests the `map_remote` option applies to.
+
+* **url-regex** is a valid Python regular expression that defines what gets replaced in the URLs of requests.
+
+* **replacement** is a string literal that is substituted in.
+
+The _separator_ is arbitrary, and is defined by the first character.
+
+### Examples
+
+Map all requests ending with `.jpg` to `https://placedog.net/640/480?random`.
+Note that this might fail if the original HTTP request destination uses HTTP2 but the replaced
+destination does not support HTTP2.
+
+```
+|.*\.jpg$|https://placedog.net/640/480?random
+```
+
+Re-route all GET requests from `example.org` to `mitmproxy.org` (using `|` as the separator):
+
+```
+|~m GET|//example.org/|//mitmproxy.org/
+```
+
+
+## Modify Body
+
+The `modify_body` option lets you specify an arbitrary number of patterns that
+define replacements within bodies of flows. `modify_body` patterns look like this:
+
+```
+/flow-filter/body-regex/replacement
+/flow-filter/body-regex/@file-path
+/body-regex/replacement
+/body-regex/@file-path
+```
+
+* **flow-filter** is an optional mitmproxy [filter expression]({{< relref "concepts-filters">}})
+that defines which flows a replacement applies to.
+
+* **body-regex** is a valid Python regular expression that defines what gets replaced.
+
+* **replacement** is a string literal that is substituted in. If the replacement string
+literal starts with `@` as in `@file-path`, it is treated as a **file path** from which the replacement is read.
+
+The _separator_ is arbitrary, and is defined by the first character.
+
+Modify hooks fire when either a client request or a server response is
 received. Only the matching flow component is affected: so, for example,
-if a replace hook is triggered on server response, the replacement is
+if a modify hook is triggered on server response, the replacement is
 only run on the Response object leaving the Request intact. You control
 whether the hook triggers on the request, response or both using the
 filter pattern. If you need finer-grained control than this, it's simple
@@ -76,17 +192,89 @@ to create a script using the replacement API on Flow components.
 
 ### Examples
 
-Replace `foo` with `bar` in requests:
+Replace `foo` with `bar` in bodies of requests:
 
-{{< highlight none  >}}
-:~q:foo:bar
-{{< / highlight >}}
+```
+/~q/foo/bar
+```
 
 Replace `foo` with the data read from `~/xss-exploit`:
 
-{{< highlight bash  >}}
-mitmdump --replacements :~q:foo:@~/xss-exploit
-{{< / highlight >}}
+```bash
+mitmdump --modify-body :~q:foo:@~/xss-exploit
+```
+
+
+## Modify Headers
+
+The `modify_headers` option lets you specify a set of headers to be modified.
+New headers can be added, and existing headers can be overwritten or removed.
+`modify_headers` patterns look like this:
+
+```
+/flow-filter/name/value
+/flow-filter/name/@file-path
+/name/value
+/name/@file-path
+```
+
+* **flow-filter** is an optional mitmproxy [filter expression]({{< relref "concepts-filters">}})
+that defines which flows to modify headers on.
+
+* **name** is the header name to be set, replaced or removed.
+
+* **value** is the header value to be set or replaced. An empty **value** removes existing
+headers with **name**. If the value string literal starts with `@` as in
+`@file-path`, it is treated as a **file path** from which the replacement is read.
+
+The _separator_ is arbitrary, and is defined by the first character.
+
+Existing headers are overwritten by default. This can be changed using a filter expression.
+
+Modify hooks fire when either a client request or a server response is
+received. Only the matching flow component is affected: so, for example,
+if a modify hook is triggered on server response, the replacement is
+only run on the Response object leaving the Request intact. You control
+whether the hook triggers on the request, response or both using the
+filter pattern. If you need finer-grained control than this, it's simple
+to create a script using the replacement API on Flow components.
+
+### Examples
+
+Set the `Host` header to `example.org` for all requests (existing `Host`
+headers are replaced):
+
+```
+/~q/Host/example.org
+```
+
+Set the `Host` header to `example.org` for all requests that do not have an
+existing `Host` header:
+
+```
+/~q & !~h Host:/Host/example.org
+```
+
+Set the `User-Agent` header to the data read from `~/useragent.txt` for all requests
+(existing `User-Agent` headers are replaced):
+
+```
+/~q/Host/@~/useragent.txt
+```
+
+Remove existing `Host` headers from all requests:
+
+```
+/~q/Host/
+```
+
+## Proxy Authentication
+
+Asks the user for authentication before they are permitted to use the proxy.
+Authentication headers are stripped from the flows, so they are not passed to
+upstream servers. For now, only HTTP Basic authentication is supported. The
+proxy auth options are not compatible with the transparent, socks or reverse
+proxy mode.
 
 
 ## Server-side replay
@@ -131,19 +319,6 @@ then the respective recorded responses are simply replayed by mitmproxy.
 Otherwise, the unmatched requests is forwarded to the upstream server. If
 forwarding is not desired, you can use the --kill (-k) switch to prevent that.
 
-## Set Headers
-
-The `setheaders` option lets you specify a set of headers to be added to
-requests or responses, based on a filter pattern. A `setheaders` expression
-looks like this:
-
-{{< highlight none  >}}
-/patt/name/value
-{{< / highlight >}}
-
-Here, **patt** is a mitmproxy filter expression that defines which flows to set
-headers on, and **name** and **value** are the header name and the value to set
-respectively.
 
 ## Sticky auth
 
@@ -153,6 +328,7 @@ seen. This is enough to allow you to access a server resource using HTTP Basic
 authentication through the proxy. Note that <span
 data-role="program">mitmproxy</span> doesn't (yet) support replay of HTTP Digest
 authentication.
+
 
 ## Sticky cookies
 
@@ -170,6 +346,7 @@ Sticky cookies are especially powerful when used in conjunction with [client
 replay]({{< relref "#client-side-replay" >}}) - you can record the
 authentication process once, and simply replay it on startup every time you need
 to interact with the secured resources.
+
 
 ## Streaming
 
@@ -189,8 +366,7 @@ You can also use a script to customise exactly which requests or responses are
 streamed. Requests/Responses that should be tagged for streaming by setting
 their ``.stream`` attribute to ``True``:
 
-{{< example src="examples/complex/stream.py" lang="py" >}}
-
+{{< example src="examples/addons/http-stream-simple.py" lang="py" >}}
 
 ### Websockets
 
@@ -200,6 +376,7 @@ changes to the WebSocket message payloads will not have any effect on the actual
 payload sent to the server as the frames are immediately forwarded to the
 server. In contrast to HTTP streaming, where the body is not stored, the message
 payload will still be stored in the WebSocket flow.
+
 
 ## Upstream Certificates
 

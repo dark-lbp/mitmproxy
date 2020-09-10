@@ -20,6 +20,9 @@ class _HttpTransmissionLayer(base.Layer):
     def read_request_body(self, request):
         raise NotImplementedError()
 
+    def read_request_trailers(self, request):
+        raise NotImplementedError()
+
     def send_request(self, request):
         raise NotImplementedError()
 
@@ -30,11 +33,15 @@ class _HttpTransmissionLayer(base.Layer):
         raise NotImplementedError()
         yield "this is a generator"  # pragma: no cover
 
+    def read_response_trailers(self, request, response):
+        raise NotImplementedError()
+
     def read_response(self, request):
         response = self.read_response_headers()
         response.data.content = b"".join(
             self.read_response_body(request, response)
         )
+        response.data.trailers = self.read_response_trailers(request, response)
         return response
 
     def send_response(self, response):
@@ -42,11 +49,15 @@ class _HttpTransmissionLayer(base.Layer):
             raise exceptions.HttpException("Cannot assemble flow with missing content")
         self.send_response_headers(response)
         self.send_response_body(response, [response.data.content])
+        self.send_response_trailers(response)
 
     def send_response_headers(self, response):
         raise NotImplementedError()
 
     def send_response_body(self, response, chunks):
+        raise NotImplementedError()
+
+    def send_response_trailers(self, response, chunks):
         raise NotImplementedError()
 
     def check_close_connection(self, f):
@@ -137,12 +148,14 @@ MODE_REQUEST_FORMS = {
 
 
 def validate_request_form(mode, request):
-    if request.first_line_format == "absolute" and request.scheme != "http":
+    if request.first_line_format == "absolute" and request.scheme not in ("http", "https"):
         raise exceptions.HttpException(
             "Invalid request scheme: %s" % request.scheme
         )
     allowed_request_forms = MODE_REQUEST_FORMS[mode]
     if request.first_line_format not in allowed_request_forms:
+        if request.is_http2 and mode is HTTPMode.transparent and request.first_line_format == "absolute":
+            return  # dirty hack: h2 may have authority info. will be fixed properly with sans-io.
         if mode == HTTPMode.transparent:
             err_message = textwrap.dedent((
                 """
@@ -241,7 +254,7 @@ class HttpLayer(base.Layer):
     def _process_flow(self, f):
         try:
             try:
-                request = self.read_request_headers(f)
+                request: http.HTTPRequest = self.read_request_headers(f)
             except exceptions.HttpReadDisconnect:
                 # don't throw an error for disconnects that happen
                 # before/between requests.
@@ -255,6 +268,7 @@ class HttpLayer(base.Layer):
                 f.request.data.content = b"".join(
                     self.read_request_body(f.request)
                 )
+                f.request.data.trailers = self.read_request_trailers(f.request)
                 f.request.timestamp_end = time.time()
                 self.channel.ask("http_connect", f)
 
@@ -267,21 +281,26 @@ class HttpLayer(base.Layer):
                     self.send_error_response(400, msg)
                     return False
 
-            validate_request_form(self.mode, request)
+            if not self.config.options.relax_http_form_validation:
+                validate_request_form(self.mode, request)
             self.channel.ask("requestheaders", f)
             # Re-validate request form in case the user has changed something.
-            validate_request_form(self.mode, request)
+            if not self.config.options.relax_http_form_validation:
+                validate_request_form(self.mode, request)
 
             if request.headers.get("expect", "").lower() == "100-continue":
                 # TODO: We may have to use send_response_headers for HTTP2
                 # here.
-                self.send_response(http.expect_continue_response)
+                self.send_response(http.make_expect_continue_response())
                 request.headers.pop("expect")
 
             if f.request.stream:
                 f.request.data.content = None
             else:
                 f.request.data.content = b"".join(self.read_request_body(request))
+
+            f.request.data.trailers = self.read_request_trailers(f.request)
+
             request.timestamp_end = time.time()
         except exceptions.HttpException as e:
             # We optimistically guess there might be an HTTP client on the
@@ -303,7 +322,7 @@ class HttpLayer(base.Layer):
         # set first line format to relative in regular mode,
         # see https://github.com/mitmproxy/mitmproxy/issues/1759
         if self.mode is HTTPMode.regular and request.first_line_format == "absolute":
-            request.first_line_format = "relative"
+            request.authority = ""
 
         # update host header in reverse proxy mode
         if self.config.options.mode.startswith("reverse:") and not self.config.options.keep_host_header:
@@ -317,11 +336,9 @@ class HttpLayer(base.Layer):
         if self.mode is HTTPMode.transparent:
             # Setting request.host also updates the host header, which we want
             # to preserve
-            host_header = f.request.host_header
-            f.request.host = self.__initial_server_address[0]
-            f.request.port = self.__initial_server_address[1]
-            f.request.host_header = host_header  # set again as .host overwrites this.
-            f.request.scheme = "https" if self.__initial_server_tls else "http"
+            f.request.data.host = self.__initial_server_address[0]
+            f.request.data.port = self.__initial_server_address[1]
+            f.request.data.scheme = b"https" if self.__initial_server_tls else b"http"
         self.channel.ask("request", f)
 
         try:
@@ -347,6 +364,8 @@ class HttpLayer(base.Layer):
                         self.send_request_body(f.request, chunks)
                     else:
                         self.send_request_body(f.request, [f.request.data.content])
+
+                    self.send_request_trailers(f.request)
 
                     f.response = self.read_response_headers()
 
@@ -405,6 +424,8 @@ class HttpLayer(base.Layer):
                 # response was set by an inline script.
                 # we now need to emulate the responseheaders hook.
                 self.channel.ask("responseheaders", f)
+
+            f.response.data.trailers = self.read_response_trailers(f.request, f.response)
 
             self.log("response", "debug", [repr(f.response)])
             self.channel.ask("response", f)
